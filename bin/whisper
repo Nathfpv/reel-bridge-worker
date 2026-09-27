@@ -1,0 +1,49 @@
+#!/usr/bin/env node
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const argv = process.argv.slice(2);
+const audioPath = argv[0];
+const option = (name, fallback = null) => {
+  const index = argv.indexOf(name);
+  return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
+};
+if (!audioPath) throw new Error('Audio path is required.');
+const root = dirname(dirname(new URL(import.meta.url).pathname));
+const candidates = [process.env.REEL_NODE_MODULES_ROOT, join(root, 'node_modules'), join(root, 'app', 'node_modules')].filter(Boolean);
+let modulesRoot = null;
+for (const candidate of candidates) {
+  try { await access(join(candidate, '@huggingface', 'transformers', 'dist', 'transformers.node.mjs')); modulesRoot = candidate; break; } catch {}
+}
+if (!modulesRoot) throw new Error('The Transformers.js runtime is unavailable.');
+const moduleUrl = pathToFileURL(join(modulesRoot, '@huggingface', 'transformers', 'dist', 'transformers.node.mjs'));
+const { pipeline, env } = await import(moduleUrl.href);
+env.cacheDir = process.env.HF_HOME || join(root, 'data', 'models');
+
+const wav = await readFile(audioPath);
+let offset = 12;
+let samples = null;
+while (offset + 8 <= wav.length) {
+  const id = wav.toString('ascii', offset, offset + 4);
+  const size = wav.readUInt32LE(offset + 4);
+  if (id === 'data') {
+    samples = new Float32Array(Math.floor(size / 2));
+    for (let index = 0; index < samples.length; index++) samples[index] = wav.readInt16LE(offset + 8 + index * 2) / 32768;
+    break;
+  }
+  offset += 8 + size + (size % 2);
+}
+if (!samples) throw new Error('Unsupported WAV: PCM data chunk not found.');
+
+const names = { tiny: 'onnx-community/whisper-tiny', base: 'onnx-community/whisper-base', small: 'onnx-community/whisper-small' };
+const model = process.env.WHISPER_HF_MODEL || names[option('--model', 'tiny')] || option('--model');
+const language = option('--language');
+const transcriber = await pipeline('automatic-speech-recognition', model, { return_timestamps: true });
+const result = await transcriber(samples, { return_timestamps: true, chunk_length_s: 30, stride_length_s: 5, ...(language ? { language, task: 'transcribe' } : {}) });
+const chunks = Array.isArray(result?.chunks) ? result.chunks : [];
+const segments = chunks.map((chunk) => ({ start: Number(chunk.timestamp?.[0] || 0), end: Number(chunk.timestamp?.[1] || chunk.timestamp?.[0] || 0), text: String(chunk.text || '').trim() })).filter((chunk) => chunk.text);
+if (!segments.length && String(result?.text || '').trim()) segments.push({ start: 0, end: 0, text: String(result.text).trim() });
+const outputDir = option('--output_dir', dirname(audioPath));
+const outputPath = join(outputDir, `${basename(audioPath, extname(audioPath))}.json`);
+await writeFile(outputPath, `${JSON.stringify({ text: segments.map((item) => item.text).join(' '), segments })}\n`, { mode: 0o600 });

@@ -1,0 +1,47 @@
+name: Process isolated public Reel request
+
+on:
+  repository_dispatch:
+    types: [process-reel]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isolated-public-reel-worker
+  cancel-in-progress: false
+
+jobs:
+  process:
+    if: github.event.client_payload.request_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --omit=dev
+      - name: Install pinned public downloader
+        run: |
+          install -d "$HOME/.local/bin"
+          curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp --output "$HOME/.local/bin/yt-dlp"
+          chmod 700 "$HOME/.local/bin/yt-dlp"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/reel-worker-models
+          key: reel-worker-whisper-base-v1
+      - name: Analyze public Reel and return signed result
+        env:
+          BRIDGE_SHARED_SECRET: ${{ secrets.BRIDGE_SHARED_SECRET }}
+          BRIDGE_CALLBACK_URL: ${{ vars.BRIDGE_CALLBACK_URL }}
+          REEL_WORKER_DATA_DIR: ${{ runner.temp }}/reel-worker-data
+          REEL_ANALYZER_BIN: ${{ github.workspace }}/node_modules/.bin/mcp-video-analyzer
+          REEL_FFMPEG_BIN: ${{ github.workspace }}/node_modules/ffmpeg-static/ffmpeg
+          WHISPER_BIN: ${{ github.workspace }}/bin/whisper
+          WHISPER_HF_MODEL: onnx-community/whisper-base
+          HF_HOME: ${{ runner.temp }}/reel-worker-models
+          REEL_NODE_MODULES_ROOT: ${{ github.workspace }}/node_modules
+        run: node src/process-job.js
