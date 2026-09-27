@@ -1,0 +1,16 @@
+{
+  "name": "reel-bridge-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "process": "node src/process-job.js"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.7.3",
+    "mcp-video-analyzer": "0.10.1"
+  },
+  "engines": { "node": ">=24" },
+  "overrides": { "sharp": "0.35.4" }
+}
