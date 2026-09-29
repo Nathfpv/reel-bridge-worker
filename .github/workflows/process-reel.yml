@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: isolated-public-reel-worker
+  group: isolated-public-reel-worker-${{ github.event.client_payload.request_id }}
   cancel-in-progress: false
 
 jobs:
