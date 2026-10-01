@@ -75,38 +75,86 @@ function trustedMediaUrl(value) {
   } catch { return null; }
 }
 
+export function carouselSlideIndex(filename) {
+  const match = /^carousel-(\d{1,3})-/.exec(String(filename || ''));
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+export function sortCarouselSlideFilenames(filenames) {
+  return [...(filenames || [])]
+    .filter((filename) => /^carousel-.*\.jpe?g$/i.test(filename))
+    .sort((left, right) => carouselSlideIndex(left) - carouselSlideIndex(right) || left.localeCompare(right));
+}
+
 async function analyzeCarousel(source, outputDir) {
   const ytDlp = process.env.REEL_YTDLP_BIN || 'yt-dlp';
-  let playlist;
-  try {
-    const result = await execFile(ytDlp, ['-J', '--no-warnings', '--flat-playlist', source.canonicalUrl], { timeout: 90000, maxBuffer: 64 * 1024 * 1024 });
-    playlist = JSON.parse(result.stdout);
-  } catch { return null; }
-  const entries = Array.isArray(playlist?.entries) ? playlist.entries.slice(0, 12) : [];
-  if (entries.length < 2) return null;
+  const fs = await import('node:fs/promises');
   const mediaDir = join(outputDir, 'carousel-media');
-  await (await import('node:fs/promises')).mkdir(mediaDir, { recursive: true, mode: 0o700 });
-  const imageFiles = [];
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    const media = trustedMediaUrl(entry.url || entry.thumbnail);
-    if (!media) continue;
-    const response = await fetch(media, { headers: { 'user-agent': 'Mozilla/5.0' } });
-    if (!response.ok) continue;
-    const type = response.headers.get('content-type') || '';
-    if (!type.startsWith('image/')) continue;
-    const file = join(mediaDir, `carousel-${String(index).padStart(2, '0')}.jpg`);
-    await (await import('node:fs/promises')).writeFile(file, Buffer.from(await response.arrayBuffer()), { mode: 0o600 });
-    imageFiles.push(file);
+  await fs.mkdir(mediaDir, { recursive: true, mode: 0o700 });
+
+  let playlist = null;
+  try {
+    const metadata = await execFile(
+      ytDlp,
+      ['-J', '--ignore-no-formats-error', '--no-warnings', '--flat-playlist', '--playlist-end', '12', source.canonicalUrl],
+      { timeout: 90000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    playlist = JSON.parse(metadata.stdout);
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'instagram_post_metadata_failed',
+      code: error?.code || null,
+      stderr_tail: String(error?.stderr || error?.message || '').slice(-1200),
+    }));
   }
-  if (imageFiles.length < 2) return null;
+
+  const outputTemplate = join(mediaDir, 'carousel-%(playlist_index)03d-%(id)s.%(ext)s');
+  try {
+    await execFile(
+      ytDlp,
+      [
+        '--ignore-no-formats-error',
+        '--skip-download',
+        '--write-thumbnail',
+        '--convert-thumbnails', 'jpg',
+        '--no-warnings',
+        '--no-progress',
+        '--playlist-end', '12',
+        '--output', outputTemplate,
+        source.canonicalUrl,
+      ],
+      { timeout: 120000, maxBuffer: 64 * 1024 * 1024 },
+    );
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: 'instagram_post_thumbnail_failed',
+      code: error?.code || null,
+      stderr_tail: String(error?.stderr || error?.message || '').slice(-1200),
+    }));
+    return null;
+  }
+
+  const filenames = sortCarouselSlideFilenames(await fs.readdir(mediaDir));
+  const imageFiles = filenames.slice(0, 12).map((filename) => join(mediaDir, filename));
+  if (!imageFiles.length) return null;
+
   const slideshow = join(outputDir, 'carousel.mp4');
   const inputs = imageFiles.flatMap((file) => ['-loop', '1', '-t', '3', '-i', file]);
   const filters = imageFiles.map((_, index) => `[${index}:v]scale=${config.maxWidth}:-2:force_original_aspect_ratio=decrease,pad=${config.maxWidth}:ih:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v${index}]`);
   filters.push(`${imageFiles.map((_, index) => `[v${index}]`).join('')}concat=n=${imageFiles.length}:v=1:a=0[out]`);
   await execFile(config.ffmpegBin, ['-hide_banner', '-loglevel', 'error', ...inputs, '-filter_complex', filters.join(';'), '-map', '[out]', '-y', slideshow], { timeout: 120000 });
+
   const analyzed = await runAnalyzer(slideshow, outputDir);
   analyzed.carouselSlides = imageFiles.map((filePath, index) => ({ slide_index: index + 1, filePath }));
+  if (playlist && typeof playlist === 'object') {
+    analyzed.metadata = {
+      ...(analyzed.metadata || {}),
+      ...(playlist.title ? { title: playlist.title } : {}),
+      ...(playlist.description ? { description: playlist.description } : {}),
+      ...(playlist.uploader ? { uploader: playlist.uploader } : {}),
+      ...(playlist.timestamp ? { creationTime: new Date(Number(playlist.timestamp) * 1000).toISOString() } : {}),
+    };
+  }
   return analyzed;
 }
 

@@ -26,7 +26,7 @@ jobs:
       - name: Install pinned public downloader
         run: |
           install -d "$HOME/.local/bin"
-          curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp --output "$HOME/.local/bin/yt-dlp"
+          curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp --output "$HOME/.local/bin/yt-dlp"
           chmod 700 "$HOME/.local/bin/yt-dlp"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
