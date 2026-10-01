@@ -76,13 +76,13 @@ function trustedMediaUrl(value) {
 }
 
 export function carouselSlideIndex(filename) {
-  const match = /^carousel-(\\d{1,3})-/.exec(String(filename || ''));
+  const match = /^carousel-(\d{1,3})-/.exec(String(filename || ''));
   return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
 export function sortCarouselSlideFilenames(filenames) {
   return [...(filenames || [])]
-    .filter((filename) => /^carousel-.*\\.jpe?g$/i.test(filename))
+    .filter((filename) => /^carousel-.*\.jpe?g$/i.test(filename))
     .sort((left, right) => carouselSlideIndex(left) - carouselSlideIndex(right) || left.localeCompare(right));
 }
 
