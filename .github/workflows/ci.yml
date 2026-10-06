@@ -2,7 +2,7 @@ name: Verify isolated public worker
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/reel-bridge-ha-worker]
   pull_request:
     branches: [main]
 
@@ -20,5 +20,6 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --check src/process-job.js && node --check src/analyzer.js
+      - run: node --check src/process-job.js && node --check src/analyzer.js && node --check src/result-transport.js
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm test
