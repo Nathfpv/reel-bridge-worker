@@ -33,7 +33,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/reel-worker-models
           key: reel-worker-whisper-base-v1
-      - name: Analyze public Reel and return signed result
+      - name: Analyze public Reel and prepare durable signed result
         env:
           BRIDGE_SHARED_SECRET: ${{ secrets.BRIDGE_SHARED_SECRET }}
           BRIDGE_CALLBACK_URL: ${{ vars.BRIDGE_CALLBACK_URL }}
@@ -44,4 +44,21 @@ jobs:
           WHISPER_HF_MODEL: onnx-community/whisper-base
           HF_HOME: ${{ runner.temp }}/reel-worker-models
           REEL_NODE_MODULES_ROOT: ${{ github.workspace }}/node_modules
+          BRIDGE_RESULT_DIRECTORY: ${{ runner.temp }}/reel-result
         run: node src/process-job.js
+      - name: Store immutable result before notification
+        id: result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reel-result-${{ github.event.client_payload.request_id }}
+          path: ${{ runner.temp }}/reel-result/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Notify private result queue with bounded signed reference
+        env:
+          BRIDGE_SHARED_SECRET: ${{ secrets.BRIDGE_SHARED_SECRET }}
+          BRIDGE_CALLBACK_URL: ${{ vars.BRIDGE_CALLBACK_URL }}
+          BRIDGE_RESULT_DIRECTORY: ${{ runner.temp }}/reel-result
+          BRIDGE_ARTIFACT_ID: ${{ steps.result.outputs.artifact-id }}
+        run: node src/result-transport.js
