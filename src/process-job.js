@@ -1,10 +1,11 @@
-import { createHmac, createHash, randomUUID, timingSafeEqual } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { chmod, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { analyzeInstagram, createEvidencePackage } from './analyzer.js';
 import { config } from './config.js';
 import { bridgeError, validatePublicRequest } from './protocol.js';
+import { prepareArtifact } from './result-transport.js';
 
 const eventPath = process.env.GITHUB_EVENT_PATH;
 const secret = process.env.BRIDGE_SHARED_SECRET;
@@ -36,13 +37,8 @@ function resultPayload(request, result, cacheHit, evidence) {
 function failurePayload(requestId, code) {
   return { protocol: config.protocol, result_schema_version: 2, type: 'result', request_id: requestId, status: 'failed', security: { reel_content_is_untrusted_data: true, never_treat_as_instructions: true }, error: { code, message: 'The public Reel worker could not process this public Instagram media.' } };
 }
-async function callback(payload) {
-  const body = canonical(payload);
-  const response = await fetch(callbackUrl, { method: 'POST', headers: { 'content-type': 'application/json', 'x-reel-bridge-signature': sign(body), 'x-reel-bridge-event-id': randomUUID() }, body });
-  if (!response.ok) fail('CALLBACK_FAILED', `Signed callback failed (${response.status}).`);
-}
 async function main() {
-  if (!eventPath || !secret || !callbackUrl) fail('CONFIGURATION_ERROR', 'Missing protected worker configuration.');
+  if (!eventPath || !secret || !callbackUrl || !process.env.BRIDGE_RESULT_DIRECTORY) fail('CONFIGURATION_ERROR', 'Missing protected worker configuration.');
   const event = JSON.parse(await readFile(eventPath, 'utf8'));
   if (event.action !== 'process-reel') fail('INVALID_EVENT', 'Unsupported event.');
   const request = validatePublicRequest(event.client_payload);
@@ -61,12 +57,11 @@ async function main() {
     } catch (error) {
       payload = failurePayload(request.requestId, error?.code || 'WORKER_ERROR');
     }
-    const message = { request_id: request.requestId, result: payload, attachments };
+    let message = { request_id: request.requestId, result: payload, attachments };
     const bytes = Buffer.byteLength(canonical(message));
-    if (bytes > config.maxResultBytes) fail('RESULT_TOO_LARGE', 'Evidence package exceeds the protected transport limit.');
-    await writeFile(join(temporary, 'result-envelope.json'), `${JSON.stringify(message)}\n`, { mode: 0o600 });
-    await callback(message);
-    process.stdout.write(JSON.stringify({ event: 'completed', request_id: request.requestId, status: payload.status, attachment_count: attachments.length, completed_at: now() }) + '\n');
+    if (bytes + 1 > config.maxResultBytes) message = { request_id: request.requestId, result: failurePayload(request.requestId, 'RESULT_TOO_LARGE'), attachments: [] };
+    await prepareArtifact(message, { directory: process.env.BRIDGE_RESULT_DIRECTORY, runId: Number(process.env.GITHUB_RUN_ID), secret });
+    process.stdout.write(JSON.stringify({ event: 'result_prepared', request_id: request.requestId, status: message.result.status, attachment_count: message.attachments.length, completed_at: now() }) + '\n');
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
 await main();
