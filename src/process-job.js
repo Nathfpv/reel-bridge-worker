@@ -32,6 +32,13 @@ function resultPayload(request, result, cacheHit, evidence) {
     transcript: { language: result.metadata?.language || null, text: transcript.map((entry) => entry.text).join(' '), segments: transcript },
     ocr: (result.ocr || []).map((entry) => ({ timestamp: Number(entry.timestamp_seconds ?? entry.timestamp ?? 0), text: String(entry.text || '').trim(), confidence: Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : null })).filter((entry) => entry.text),
     timeline: result.timeline || [], frame_count: frames.length, cache: { hit: Boolean(cacheHit) }, warnings: result.warnings || [], evidence,
+    carousel: Array.isArray(result.carouselSlides) && result.carouselSlides.length ? {
+      slide_count: result.carouselSlides.length,
+      slides: result.carouselSlides.map((slide) => ({
+        slide_index: slide.slide_index, media_type: slide.media_type,
+        start_seconds: slide.start_seconds, end_seconds: slide.end_seconds,
+      })),
+    } : null,
   };
 }
 function failurePayload(requestId, code) {
@@ -55,7 +62,16 @@ async function main() {
       payload = resultPayload(request, analyzed.result, analyzed.cacheHit, evidence.manifest);
       attachments = [{ filename: 'contact_sheet.jpg', mime_type: 'image/jpeg', data: evidence.contactSheet }, ...evidence.keyframes.map((frame) => ({ filename: frame.filename, mime_type: 'image/jpeg', data: frame.data }))].filter((item) => item.data).map((item) => ({ ...item, data: item.data.toString('base64') }));
     } catch (error) {
-      payload = failurePayload(request.requestId, error?.code || 'WORKER_ERROR');
+      const errorCode = typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(error.code)
+        ? error.code : 'WORKER_ERROR';
+      console.error(JSON.stringify({
+        event: 'media_analysis_failed', request_id: request.requestId,
+        error_code: errorCode,
+        process_exit_code: error?.exitCode ?? (typeof error?.code === 'number' ? error.code : null),
+        stage: error?.stage || null,
+        stderr_tail: String(error?.stderrTail || error?.message || '').slice(-1200),
+      }));
+      payload = failurePayload(request.requestId, errorCode);
     }
     let message = { request_id: request.requestId, result: payload, attachments };
     const bytes = Buffer.byteLength(canonical(message));
