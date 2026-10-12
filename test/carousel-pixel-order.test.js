@@ -38,12 +38,12 @@ test('real FFmpeg contact sheet preserves distinct pixels for all 20 ordered car
   assert.equal(output.contactSheet[1], 0xd8);
   assert.equal(output.manifest.carousel.slide_count, 20);
   assert.equal(output.manifest.carousel.original_slide_order_preserved, true);
-  assert.equal(output.manifest.carousel.all_slides_in_contact_sheet, true);
+  assert.equal(output.manifest.contact_sheet.tiles.length, 20);
   assert.deepEqual(output.manifest.contact_sheet.tiles.map(x => x.slide_index),
     Array.from({ length: 20 }, (_, i) => i + 1));
-  assert.equal(output.keyframes.length, 4, 'attachment size budget must stay unchanged');
+  assert.equal(output.keyframes.length, 20, 'complete carousel requires every slide attachment');
   assert.deepEqual(output.keyframes.map(x => x.filename),
-    ['slide_01.jpg', 'slide_02.jpg', 'slide_03.jpg', 'slide_04.jpg']);
+    Array.from({ length: 20 }, (_, i) => 'slide_' + String(i + 1).padStart(2, '0') + '.jpg'));
   assert.deepEqual(await readFile(join(work, 'contact_sheet.jpg')), output.contactSheet);
 
   // Decode the ACTUAL rendered contact sheet and inspect the central RGB pixel
