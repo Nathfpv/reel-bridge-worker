@@ -62,3 +62,17 @@ jobs:
           BRIDGE_RESULT_DIRECTORY: ${{ runner.temp }}/reel-result
           BRIDGE_ARTIFACT_ID: ${{ steps.result.outputs.artifact-id }}
         run: node src/result-transport.js
+      - name: Fail workflow when delivered analysis failed
+        if: always() && steps.result.outcome == 'success'
+        env:
+          BRIDGE_RESULT_DIRECTORY: ${{ runner.temp }}/reel-result
+        run: |
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const file = process.env.BRIDGE_RESULT_DIRECTORY + "/result-envelope.json";
+            const message = JSON.parse(readFileSync(file, "utf8"));
+            if (message.result?.status !== "completed") {
+              console.error("ANALYSIS_FAILED: " + (message.result?.error?.code || "UNKNOWN"));
+              process.exitCode = 1;
+            }
+          '
