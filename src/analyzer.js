@@ -4,6 +4,8 @@ import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { bridgeError } from './protocol.js';
+import { collectCarouselSlides, composeCarousel, MAX_CAROUSEL_SLIDES } from './carousel-media.js';
+export { carouselSlideIndex, sortCarouselSlideFilenames } from './carousel-media.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -12,11 +14,17 @@ function timeToSeconds(value) {
   return parts.reduce((total, part) => total * 60 + (Number.isFinite(part) ? part : 0), 0);
 }
 
-function normalize(raw, analyzerVersion) {
+export function normalize(raw, analyzerVersion) {
+  const duration = Number(raw.metadata?.duration);
   const transcript = (raw.transcript || []).map((entry, index, entries) => {
     const start = timeToSeconds(entry.time ?? entry.start_seconds);
     const next = entries[index + 1];
-    return { ...entry, start_seconds: start, end_seconds: next ? timeToSeconds(next.time ?? next.start_seconds) : start };
+    const explicitEnd = entry.end_seconds ?? entry.end;
+    const candidate = explicitEnd != null ? timeToSeconds(explicitEnd)
+      : next ? timeToSeconds(next.time ?? next.start_seconds)
+      : Number.isFinite(duration) && duration > 0 ? duration : start;
+    return { ...entry, start_seconds: start,
+      end_seconds: Math.max(start, Number.isFinite(candidate) ? candidate : start) };
   });
   const ocr = (raw.ocrResults || raw.ocr || []).map((entry) => ({ ...entry, timestamp_seconds: entry.timestamp_seconds ?? timeToSeconds(entry.time) }));
   return { ...raw, transcript, ocr, frames: raw.frames || [], timeline: raw.timeline || [], processing: { engine: `mcp-video-analyzer@${analyzerVersion}`, transcription_backend: 'huggingface-whisper', transcription_model: config.whisperHfModel, paid_api_used: false, analyzed_at: new Date().toISOString(), cache: 'miss' } };
@@ -75,86 +83,62 @@ function trustedMediaUrl(value) {
   } catch { return null; }
 }
 
-export function carouselSlideIndex(filename) {
-  const match = /^carousel-(\d{1,3})-/.exec(String(filename || ''));
-  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
-}
-
-export function sortCarouselSlideFilenames(filenames) {
-  return [...(filenames || [])]
-    .filter((filename) => /^carousel-.*\.jpe?g$/i.test(filename))
-    .sort((left, right) => carouselSlideIndex(left) - carouselSlideIndex(right) || left.localeCompare(right));
-}
-
 async function analyzeCarousel(source, outputDir) {
   const ytDlp = process.env.REEL_YTDLP_BIN || 'yt-dlp';
   const fs = await import('node:fs/promises');
   const mediaDir = join(outputDir, 'carousel-media');
   await fs.mkdir(mediaDir, { recursive: true, mode: 0o700 });
 
-  let playlist = null;
+  let playlist;
   try {
-    const metadata = await execFile(
-      ytDlp,
-      ['-J', '--ignore-no-formats-error', '--no-warnings', '--flat-playlist', '--playlist-end', '12', source.canonicalUrl],
-      { timeout: 90000, maxBuffer: 64 * 1024 * 1024 },
-    );
+    const metadata = await execFile(ytDlp, [
+      '-J', '--ignore-no-formats-error', '--no-warnings', '--flat-playlist',
+      source.canonicalUrl,
+    ], { timeout: 90000, maxBuffer: 64 * 1024 * 1024 });
     playlist = JSON.parse(metadata.stdout);
-  } catch (error) {
-    console.error(JSON.stringify({
-      event: 'instagram_post_metadata_failed',
-      code: error?.code || null,
-      stderr_tail: String(error?.stderr || error?.message || '').slice(-1200),
-    }));
+  } catch (cause) {
+    const error = bridgeError('CAROUSEL_METADATA_FAILED', 'Could not determine carousel slide count.');
+    error.stderrTail = String(cause?.stderr || cause?.message || '').slice(-1200);
+    throw error;
+  }
+  const entries = Array.isArray(playlist?.entries) ? playlist.entries : [playlist];
+  if (entries.length < 1) throw bridgeError('CAROUSEL_MEDIA_MISSING', 'Instagram returned an empty post.');
+  if (entries.length > MAX_CAROUSEL_SLIDES) {
+    throw bridgeError('CAROUSEL_LIMIT_EXCEEDED', 'The carousel exceeds the supported slide count.');
   }
 
   const outputTemplate = join(mediaDir, 'carousel-%(playlist_index)03d-%(id)s.%(ext)s');
   try {
-    await execFile(
-      ytDlp,
-      [
-        '--ignore-no-formats-error',
-        '--skip-download',
-        '--write-thumbnail',
-        '--convert-thumbnails', 'jpg',
-        '--no-warnings',
-        '--no-progress',
-        '--playlist-end', '12',
-        '--output', outputTemplate,
-        source.canonicalUrl,
-      ],
-      { timeout: 120000, maxBuffer: 64 * 1024 * 1024 },
-    );
-  } catch (error) {
-    console.error(JSON.stringify({
-      event: 'instagram_post_thumbnail_failed',
-      code: error?.code || null,
-      stderr_tail: String(error?.stderr || error?.message || '').slice(-1200),
-    }));
-    return null;
+    // Download actual video streams as well as still-image thumbnails. Skipping
+    // video downloads silently discards audio and motion in mixed carousels.
+    await execFile(ytDlp, [
+      '--ignore-no-formats-error', '--write-thumbnail', '--convert-thumbnails', 'jpg',
+      '--no-warnings', '--no-progress', '--output', outputTemplate, source.canonicalUrl,
+    ], { timeout: 240000, maxBuffer: 64 * 1024 * 1024 });
+  } catch (cause) {
+    const error = bridgeError('CAROUSEL_DOWNLOAD_FAILED', 'Carousel media download failed.');
+    error.stderrTail = String(cause?.stderr || cause?.message || '').slice(-1200);
+    throw error;
   }
 
-  const filenames = sortCarouselSlideFilenames(await fs.readdir(mediaDir));
-  const imageFiles = filenames.slice(0, 12).map((filename) => join(mediaDir, filename));
-  if (!imageFiles.length) return null;
-
-  const slideshow = join(outputDir, 'carousel.mp4');
-  const inputs = imageFiles.flatMap((file) => ['-loop', '1', '-t', '3', '-i', file]);
-  const filters = imageFiles.map((_, index) => `[${index}:v]scale=${config.maxWidth}:-2:force_original_aspect_ratio=decrease,pad=${config.maxWidth}:ih:(ow-iw)/2:(oh-ih)/2,format=yuv420p[v${index}]`);
-  filters.push(`${imageFiles.map((_, index) => `[v${index}]`).join('')}concat=n=${imageFiles.length}:v=1:a=0[out]`);
-  await execFile(config.ffmpegBin, ['-hide_banner', '-loglevel', 'error', ...inputs, '-filter_complex', filters.join(';'), '-map', '[out]', '-y', slideshow], { timeout: 120000 });
-
-  const analyzed = await runAnalyzer(slideshow, outputDir);
-  analyzed.carouselSlides = imageFiles.map((filePath, index) => ({ slide_index: index + 1, filePath }));
-  if (playlist && typeof playlist === 'object') {
-    analyzed.metadata = {
-      ...(analyzed.metadata || {}),
-      ...(playlist.title ? { title: playlist.title } : {}),
-      ...(playlist.description ? { description: playlist.description } : {}),
-      ...(playlist.uploader ? { uploader: playlist.uploader } : {}),
-      ...(playlist.timestamp ? { creationTime: new Date(Number(playlist.timestamp) * 1000).toISOString() } : {}),
-    };
-  }
+  const slides = collectCarouselSlides(await fs.readdir(mediaDir), entries);
+  const composed = await composeCarousel(slides, {
+    mediaDir, outputDir, ffmpegBin: config.ffmpegBin,
+    ffprobeBin: process.env.REEL_FFPROBE_BIN || 'ffprobe',
+    maxWidth: config.maxWidth,
+  });
+  const analyzed = await runAnalyzer(composed.videoPath, outputDir, {
+    maxFrames: Math.max(config.maxFrames, slides.length * 3),
+  });
+  analyzed.carouselSlides = composed.slides;
+  analyzed.metadata = {
+    ...(analyzed.metadata || {}),
+    duration: composed.durationSeconds,
+    ...(playlist?.title ? { title: playlist.title } : {}),
+    ...(playlist?.description ? { description: playlist.description } : {}),
+    ...(playlist?.uploader ? { uploader: playlist.uploader } : {}),
+    ...(playlist?.timestamp ? { creationTime: new Date(Number(playlist.timestamp) * 1000).toISOString() } : {}),
+  };
   return analyzed;
 }
 
@@ -206,7 +190,7 @@ export async function analyzeInstagram(source) {
   const url = source.canonicalUrl || `https://www.instagram.com/${kind === 'post' ? 'p' : 'reel'}/${encodeURIComponent(shortcode)}/`;
   const outputDir = join(config.analyzerFramesDir, `${kind}-${shortcode}`);
   let raw = kind === 'post'
-    ? (await analyzeCarousel(source, outputDir)) || await runAnalyzer(url, outputDir)
+    ? await analyzeCarousel(source, outputDir)
     : await runAnalyzer(url, outputDir);
 
   const duration = Number(raw.metadata?.duration || 0);
@@ -389,6 +373,10 @@ function evidenceManifest(selected, result, keyframes) {
     carousel: result.carouselSlides?.length ? {
       slide_count: result.carouselSlides.length,
       original_slide_order_preserved: true,
+      slides: result.carouselSlides.map((slide) => ({
+        slide_index: slide.slide_index, media_type: slide.media_type,
+        start_seconds: slide.start_seconds, end_seconds: slide.end_seconds,
+      })),
     } : null,
   };
 }
@@ -396,13 +384,14 @@ function evidenceManifest(selected, result, keyframes) {
 export async function createEvidencePackage(shortcode, result, outputDir, kind = 'reel') {
   const available = [];
 
-  if (kind === 'post' && Array.isArray(result.carouselSlides) && result.carouselSlides.length > 1) {
+  const isCarousel = kind === 'post' && Array.isArray(result.carouselSlides) && result.carouselSlides.length > 0;
+  if (isCarousel) {
     for (const slide of result.carouselSlides) {
       try {
         await access(slide.filePath);
         available.push({
           path: slide.filePath,
-          seconds: (Number(slide.slide_index) - 1) * 3,
+          seconds: (Number(slide.start_seconds) + Number(slide.end_seconds)) / 2,
           frameIndex: null,
           slideIndex: Number(slide.slide_index),
         });
@@ -436,26 +425,31 @@ export async function createEvidencePackage(shortcode, result, outputDir, kind =
     }
   }
 
+  if (isCarousel && available.length !== result.carouselSlides.length) {
+    throw bridgeError('CAROUSEL_EVIDENCE_INCOMPLETE', 'Not all carousel slide images are available.');
+  }
   if (!available.length) {
     return { contactSheet: null, manifest: null, keyframes: [] };
   }
 
-  const indices = selectEvidenceFrameIndices(
-    available,
-    result.ocr || [],
-    Math.min(config.contactSheetFrames, available.length),
-    result.timeline || [],
-  );
+  // Every carousel slide must be visible in the RESULT; sampling is for videos only.
+  const indices = isCarousel
+    ? available.map((_, index) => index)
+    : selectEvidenceFrameIndices(available, result.ocr || [],
+      Math.min(config.contactSheetFrames, available.length), result.timeline || []);
   const selected = indices.map((index) => available[index]);
   const contactSheetPath = join(outputDir, 'contact_sheet.jpg');
   const contactSheet = await renderContactSheet(selected, contactSheetPath);
+  if (isCarousel && !contactSheet) {
+    throw bridgeError('CAROUSEL_EVIDENCE_FAILED', 'Could not render the full carousel contact sheet.');
+  }
 
   const ranked = scoredFrames(selected, result.ocr || [], result.timeline || [])
     .sort((a, b) => b.score - a.score || a.seconds - b.seconds);
   const keyframes = [];
   const used = new Set();
-  for (const frame of ranked) {
-    if (keyframes.length >= config.keyFrameAttachments) break;
+  for (const frame of isCarousel ? selected : ranked) {
+    if (keyframes.length >= (isCarousel ? selected.length : config.keyFrameAttachments)) break;
     const identity = frame.slideIndex ? `s${frame.slideIndex}` : `f${frame.frameIndex}`;
     if (used.has(identity)) continue;
     used.add(identity);
@@ -471,6 +465,9 @@ export async function createEvidencePackage(shortcode, result, outputDir, kind =
     } catch {}
   }
 
+  if (isCarousel && keyframes.length !== selected.length) {
+    throw bridgeError('CAROUSEL_EVIDENCE_INCOMPLETE', 'Not every carousel slide was attached.');
+  }
   return {
     contactSheet,
     keyframes,
