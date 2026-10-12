@@ -27,4 +27,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
       - run: ffmpeg -version && ffprobe -version
+      - name: Install FFmpeg for media integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
       - run: npm test
