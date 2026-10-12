@@ -4,7 +4,7 @@ import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { bridgeError } from './protocol.js';
-import { collectCarouselSlides, composeCarousel, MAX_CAROUSEL_SLIDES } from './carousel-media.js';
+import { downloadCarouselWithFallback, composeCarousel, MAX_CAROUSEL_SLIDES } from './carousel-media.js';
 export { carouselSlideIndex, sortCarouselSlideFilenames } from './carousel-media.js';
 
 const execFile = promisify(execFileCallback);
@@ -108,20 +108,24 @@ async function analyzeCarousel(source, outputDir) {
   }
 
   const outputTemplate = join(mediaDir, 'carousel-%(playlist_index)03d-%(id)s.%(ext)s');
-  try {
-    // Download actual video streams as well as still-image thumbnails. Skipping
-    // video downloads silently discards audio and motion in mixed carousels.
-    await execFile(ytDlp, [
-      '--ignore-no-formats-error', '--write-thumbnail', '--convert-thumbnails', 'jpg',
-      '--no-warnings', '--no-progress', '--output', outputTemplate, source.canonicalUrl,
-    ], { timeout: 240000, maxBuffer: 64 * 1024 * 1024 });
-  } catch (cause) {
-    const error = bridgeError('CAROUSEL_DOWNLOAD_FAILED', 'Carousel media download failed.');
-    error.stderrTail = String(cause?.stderr || cause?.message || '').slice(-1200);
-    throw error;
-  }
+  const common = [
+    '--ignore-no-formats-error', '--write-thumbnail', '--convert-thumbnails', 'jpg',
+    '--no-warnings', '--no-progress', '--output', outputTemplate, source.canonicalUrl,
+  ];
+  const runDownload = (args) => execFile(ytDlp, args, {
+    timeout: 240000, maxBuffer: 64 * 1024 * 1024,
+  });
+  const slides = await downloadCarouselWithFallback({
+    entries,
+    listFiles: () => fs.readdir(mediaDir),
+    // First attempt preserves real video and audio. Instagram images sometimes
+    // report "No video formats found" despite valid thumbnail downloads.
+    downloadMedia: () => runDownload(common),
+    // Thumbnail-only fallback fills missing images; a missing video is still
+    // rejected by collectCarouselSlides instead of being silently downgraded.
+    downloadThumbnails: () => runDownload(['--skip-download', ...common]),
+  });
 
-  const slides = collectCarouselSlides(await fs.readdir(mediaDir), entries);
   const composed = await composeCarousel(slides, {
     mediaDir, outputDir, ffmpegBin: config.ffmpegBin,
     ffprobeBin: process.env.REEL_FFPROBE_BIN || 'ffprobe',
