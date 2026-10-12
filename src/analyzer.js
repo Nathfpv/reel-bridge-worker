@@ -425,6 +425,9 @@ export async function createEvidencePackage(shortcode, result, outputDir, kind =
     }
   }
 
+  if (isCarousel && available.length !== result.carouselSlides.length) {
+    throw bridgeError('CAROUSEL_EVIDENCE_INCOMPLETE', 'Not all carousel slide images are available.');
+  }
   if (!available.length) {
     return { contactSheet: null, manifest: null, keyframes: [] };
   }
@@ -437,6 +440,9 @@ export async function createEvidencePackage(shortcode, result, outputDir, kind =
   const selected = indices.map((index) => available[index]);
   const contactSheetPath = join(outputDir, 'contact_sheet.jpg');
   const contactSheet = await renderContactSheet(selected, contactSheetPath);
+  if (isCarousel && !contactSheet) {
+    throw bridgeError('CAROUSEL_EVIDENCE_FAILED', 'Could not render the full carousel contact sheet.');
+  }
 
   const ranked = scoredFrames(selected, result.ocr || [], result.timeline || [])
     .sort((a, b) => b.score - a.score || a.seconds - b.seconds);
@@ -459,6 +465,9 @@ export async function createEvidencePackage(shortcode, result, outputDir, kind =
     } catch {}
   }
 
+  if (isCarousel && keyframes.length !== selected.length) {
+    throw bridgeError('CAROUSEL_EVIDENCE_INCOMPLETE', 'Not every carousel slide was attached.');
+  }
   return {
     contactSheet,
     keyframes,

@@ -45,3 +45,16 @@ test('real contact sheet and individual attachments cover all 20 ordered carouse
     Array.from({ length: 20 }, (_, index) => 'slide_' + String(index + 1).padStart(2, '0') + '.jpg'));
   assert.deepEqual(await readFile(join(directory, 'contact_sheet.jpg')), result.contactSheet);
 });
+
+test('missing slide attachment is an explicit failure, never a completed carousel', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'carousel-incomplete-'));
+  t.after(async () => rm(directory, { recursive: true, force: true }));
+  await assert.rejects(createEvidencePackage('synthetic', {
+    carouselSlides: [{
+      slide_index: 1, media_type: 'image',
+      filePath: join(directory, 'not-downloaded.jpg'),
+      start_seconds: 0, end_seconds: 3,
+    }],
+    frames: [], ocr: [], timeline: [],
+  }, directory, 'post'), { code: 'CAROUSEL_EVIDENCE_INCOMPLETE' });
+});
