@@ -47,3 +47,36 @@ test('explicit transcript end times are preserved and clamped to their starts', 
   assert.deepEqual(result.transcript.map((x) => [x.start_seconds, x.end_seconds]),
     [[2, 4.2], [9, 9]]);
 });
+
+
+test('Instagram photo entries receive thumbnails without attempting video downloads', async () => {
+  const { carouselDownloadArgs, carouselVideoIndices } = await import('../src/analyzer.js');
+  const entries = Array.from({ length: 12 }, (_, i) => ({
+    id: 'photo' + i, ext: 'none', duration: null,
+  }));
+  assert.deepEqual(carouselVideoIndices(entries), []);
+  const plan = carouselDownloadArgs('https://www.instagram.com/p/Dexample/', 'carousel-%(playlist_index)03d.%(ext)s', entries);
+  assert.equal(plan.videos, null);
+  assert.ok(plan.thumbnails.includes('--skip-download'));
+  assert.ok(plan.thumbnails.includes('--write-thumbnail'));
+  assert.ok(plan.thumbnails.includes('--convert-thumbnails'));
+  assert.ok(!plan.thumbnails.includes('--playlist-items'));
+});
+
+test('Mixed Instagram carousels download only video items while preserving thumbnail pass', async () => {
+  const { carouselDownloadArgs, carouselVideoIndices } = await import('../src/analyzer.js');
+  const entries = [
+    { ext: 'jpg', duration: null },
+    { ext: 'mp4', duration: 4.5 },
+    { ext: 'webp' },
+    { ext: null, duration: 2 },
+    { ext: 'png', duration: null },
+  ];
+  assert.deepEqual(carouselVideoIndices(entries), [2, 4]);
+  const plan = carouselDownloadArgs('https://www.instagram.com/p/Dmixed/', 'output', entries);
+  assert.ok(plan.thumbnails.includes('--skip-download'));
+  assert.ok(plan.videos.includes('--playlist-items'));
+  assert.equal(plan.videos[plan.videos.indexOf('--playlist-items') + 1], '2,4');
+  assert.ok(!plan.videos.includes('--skip-download'));
+  assert.ok(!plan.videos.includes('--write-thumbnail'));
+});
