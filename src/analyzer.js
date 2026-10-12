@@ -14,11 +14,17 @@ function timeToSeconds(value) {
   return parts.reduce((total, part) => total * 60 + (Number.isFinite(part) ? part : 0), 0);
 }
 
-function normalize(raw, analyzerVersion) {
+export function normalize(raw, analyzerVersion) {
+  const duration = Number(raw.metadata?.duration);
   const transcript = (raw.transcript || []).map((entry, index, entries) => {
     const start = timeToSeconds(entry.time ?? entry.start_seconds);
     const next = entries[index + 1];
-    return { ...entry, start_seconds: start, end_seconds: next ? timeToSeconds(next.time ?? next.start_seconds) : start };
+    const explicitEnd = entry.end_seconds ?? entry.end;
+    const candidate = explicitEnd != null ? timeToSeconds(explicitEnd)
+      : next ? timeToSeconds(next.time ?? next.start_seconds)
+      : Number.isFinite(duration) && duration > 0 ? duration : start;
+    return { ...entry, start_seconds: start,
+      end_seconds: Math.max(start, Number.isFinite(candidate) ? candidate : start) };
   });
   const ocr = (raw.ocrResults || raw.ocr || []).map((entry) => ({ ...entry, timestamp_seconds: entry.timestamp_seconds ?? timeToSeconds(entry.time) }));
   return { ...raw, transcript, ocr, frames: raw.frames || [], timeline: raw.timeline || [], processing: { engine: `mcp-video-analyzer@${analyzerVersion}`, transcription_backend: 'huggingface-whisper', transcription_model: config.whisperHfModel, paid_api_used: false, analyzed_at: new Date().toISOString(), cache: 'miss' } };
