@@ -4,7 +4,7 @@ import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { config } from './config.js';
 import { bridgeError } from './protocol.js';
-import { collectCarouselSlides, composeCarousel, MAX_CAROUSEL_SLIDES } from './carousel-media.js';
+import { downloadCarouselValidated, composeCarousel, MAX_CAROUSEL_SLIDES } from './carousel-media.js';
 export { carouselSlideIndex, sortCarouselSlideFilenames } from './carousel-media.js';
 
 const execFile = promisify(execFileCallback);
@@ -135,26 +135,19 @@ async function analyzeCarousel(source, outputDir) {
 
   const outputTemplate = join(mediaDir, 'carousel-%(playlist_index)03d-%(id)s.%(ext)s');
   const downloads = carouselDownloadArgs(source.canonicalUrl, outputTemplate, entries);
-  try {
-    // Every slide needs a poster. Instagram photos legitimately have no video
-    // formats, so downloading all playlist entries as video fails on image posts.
-    await execFile(ytDlp, downloads.thumbnails, {
+  const slides = await downloadCarouselValidated({
+    entries,
+    listFiles: () => fs.readdir(mediaDir),
+    thumbnailPass: () => execFile(ytDlp, downloads.thumbnails, {
       timeout: 120000, maxBuffer: 64 * 1024 * 1024,
-    });
-    // Download actual video streams only for entries that represent video.
-    // collectCarouselSlides checks that each expected video was downloaded.
-    if (downloads.videos) {
-      await execFile(ytDlp, downloads.videos, {
+    }),
+    videoPass: downloads.videos
+      ? () => execFile(ytDlp, downloads.videos, {
         timeout: 240000, maxBuffer: 64 * 1024 * 1024,
-      });
-    }
-  } catch (cause) {
-    const error = bridgeError('CAROUSEL_DOWNLOAD_FAILED', 'Carousel media download failed.');
-    error.stderrTail = String(cause?.stderr || cause?.message || '').slice(-1200);
-    throw error;
-  }
+      })
+      : null,
+  });
 
-  const slides = collectCarouselSlides(await fs.readdir(mediaDir), entries);
   const composed = await composeCarousel(slides, {
     mediaDir, outputDir, ffmpegBin: config.ffmpegBin,
     ffprobeBin: process.env.REEL_FFPROBE_BIN || 'ffprobe',

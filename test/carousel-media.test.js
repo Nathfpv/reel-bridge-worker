@@ -7,7 +7,7 @@ import { execFile as callback, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   MAX_CAROUSEL_SLIDES, canvasDimensions, canvasFilter,
-  collectCarouselSlides, composeCarousel,
+  collectCarouselSlides, composeCarousel, downloadCarouselValidated,
 } from '../src/carousel-media.js';
 
 const execFile = promisify(callback);
@@ -87,4 +87,44 @@ test('real FFmpeg round-trip handles portrait/square/video slides and keeps audi
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('valid complete photo output succeeds despite yt-dlp no-video exit code', async () => {
+  let retry = 0;
+  const slides = await downloadCarouselValidated({
+    entries: [{ ext: 'jpg' }, { ext: 'jpg' }, { ext: 'jpg' }],
+    thumbnailPass: async () => { if (++retry === 1) throw new Error('No video formats found!'); },
+    videoPass: null,
+    listFiles: async () => [
+      'carousel-001-a.jpg', 'carousel-002-b.jpg', 'carousel-003-c.jpg',
+    ],
+  });
+  assert.equal(slides.length, 3);
+  assert.equal(retry, 1, 'complete evidence must not trigger a redundant retry');
+});
+
+test('incomplete thumbnail output is retried and validated', async () => {
+  let attempts = 0;
+  const slides = await downloadCarouselValidated({
+    entries: [{ ext: 'jpg' }, { ext: 'jpg' }],
+    thumbnailPass: async () => { attempts += 1; },
+    videoPass: null,
+    listFiles: async () => attempts >= 2
+      ? ['carousel-001-a.jpg', 'carousel-002-b.jpg']
+      : ['carousel-001-a.jpg'],
+  });
+  assert.equal(attempts, 2);
+  assert.equal(slides.length, 2);
+});
+
+test('missing real video cannot be hidden by successful photo thumbnails', async () => {
+  await assert.rejects(
+    downloadCarouselValidated({
+      entries: [{ ext: 'jpg' }, { ext: 'mp4', duration: 4 }],
+      thumbnailPass: async () => {},
+      videoPass: async () => { throw new Error('video download unavailable'); },
+      listFiles: async () => ['carousel-001-a.jpg', 'carousel-002-b.jpg'],
+    }),
+    { code: 'CAROUSEL_VIDEO_MISSING' },
+  );
 });
