@@ -30,10 +30,15 @@ jobs:
           chmod 700 "$HOME/.local/bin/yt-dlp"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install FFprobe required by carousel video inspection
-        timeout-minutes: 5
+        timeout-minutes: 4
         run: |
-          sudo apt-get update -qq -o Acquire::Retries=3
-          sudo apt-get install -y -qq ffmpeg
+          set -euo pipefail
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            if ! timeout 90s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=1 ffmpeg; then
+              timeout 45s sudo apt-get update -qq -o Acquire::Retries=1
+              timeout 90s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=1 ffmpeg
+            fi
+          fi
           ffprobe -version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
