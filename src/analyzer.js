@@ -83,6 +83,32 @@ function trustedMediaUrl(value) {
   } catch { return null; }
 }
 
+// Instagram image entries have thumbnails but no downloadable video formats.
+// Never treat a missing video format on a photo as a failed carousel download.
+export function carouselVideoIndices(entries) {
+  return (entries || []).flatMap((entry, index) => {
+    const ext = String(entry?.ext || '').toLowerCase();
+    const kind = String(entry?.media_type || entry?.content_type || '').toLowerCase();
+    const duration = Number(entry?.duration || 0);
+    const video = /^(mp4|mkv|webm|mov|m4v)$/.test(ext) ||
+      (Number.isFinite(duration) && duration > 0) ||
+      kind === 'video' || kind === '2' || entry?.is_video === true;
+    return video ? [index + 1] : [];
+  });
+}
+
+export function carouselDownloadArgs(url, outputTemplate, entries) {
+  const common = ['--ignore-no-formats-error', '--no-warnings',
+    '--no-progress', '--output', outputTemplate];
+  const thumbnails = [...common, '--skip-download', '--write-thumbnail',
+    '--convert-thumbnails', 'jpg', url];
+  const videoIndices = carouselVideoIndices(entries);
+  const videos = videoIndices.length
+    ? [...common, '--playlist-items', videoIndices.join(','), url]
+    : null;
+  return { thumbnails, videos, videoIndices };
+}
+
 async function analyzeCarousel(source, outputDir) {
   const ytDlp = process.env.REEL_YTDLP_BIN || 'yt-dlp';
   const fs = await import('node:fs/promises');
@@ -108,13 +134,20 @@ async function analyzeCarousel(source, outputDir) {
   }
 
   const outputTemplate = join(mediaDir, 'carousel-%(playlist_index)03d-%(id)s.%(ext)s');
+  const downloads = carouselDownloadArgs(source.canonicalUrl, outputTemplate, entries);
   try {
-    // Download actual video streams as well as still-image thumbnails. Skipping
-    // video downloads silently discards audio and motion in mixed carousels.
-    await execFile(ytDlp, [
-      '--ignore-no-formats-error', '--write-thumbnail', '--convert-thumbnails', 'jpg',
-      '--no-warnings', '--no-progress', '--output', outputTemplate, source.canonicalUrl,
-    ], { timeout: 240000, maxBuffer: 64 * 1024 * 1024 });
+    // Every slide needs a poster. Instagram photos legitimately have no video
+    // formats, so downloading all playlist entries as video fails on image posts.
+    await execFile(ytDlp, downloads.thumbnails, {
+      timeout: 120000, maxBuffer: 64 * 1024 * 1024,
+    });
+    // Download actual video streams only for entries that represent video.
+    // collectCarouselSlides checks that each expected video was downloaded.
+    if (downloads.videos) {
+      await execFile(ytDlp, downloads.videos, {
+        timeout: 240000, maxBuffer: 64 * 1024 * 1024,
+      });
+    }
   } catch (cause) {
     const error = bridgeError('CAROUSEL_DOWNLOAD_FAILED', 'Carousel media download failed.');
     error.stderrTail = String(cause?.stderr || cause?.message || '').slice(-1200);
