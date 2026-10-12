@@ -7,7 +7,7 @@ import { execFile as callback, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   MAX_CAROUSEL_SLIDES, canvasDimensions, canvasFilter,
-  collectCarouselSlides, composeCarousel,
+  collectCarouselSlides, composeCarousel, downloadCarouselWithFallback,
 } from '../src/carousel-media.js';
 
 const execFile = promisify(callback);
@@ -87,4 +87,42 @@ test('real FFmpeg round-trip handles portrait/square/video slides and keeps audi
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('image-only carousel succeeds when yt-dlp writes thumbnails but exits nonzero', async () => {
+  let thumbnailRetries = 0;
+  const slides = await downloadCarouselWithFallback({
+    entries: [{ ext: 'jpg' }, { ext: 'jpg' }, { ext: 'jpg' }],
+    downloadMedia: async () => { throw new Error('No video formats found!'); },
+    downloadThumbnails: async () => { thumbnailRetries += 1; },
+    listFiles: async () => ['carousel-001-a.jpg', 'carousel-002-b.jpg', 'carousel-003-c.jpg'],
+  });
+  assert.equal(slides.length, 3);
+  assert.equal(thumbnailRetries, 0, 'all files are already available, so no redundant second request');
+});
+
+test('thumbnail-only retry recovers initially missing image slides', async () => {
+  let files = ['carousel-001-a.jpg'];
+  let retryCount = 0;
+  const slides = await downloadCarouselWithFallback({
+    entries: [{ ext: 'jpg' }, { ext: 'jpg' }],
+    downloadMedia: async () => { throw new Error('No video formats found!'); },
+    downloadThumbnails: async () => {
+      retryCount += 1;
+      files = ['carousel-001-a.jpg', 'carousel-002-b.jpg'];
+    },
+    listFiles: async () => files,
+  });
+  assert.equal(slides.length, 2);
+  assert.equal(retryCount, 1);
+});
+
+test('a lost video stream still fails despite thumbnail-only retry', async () => {
+  const files = ['carousel-001-a.jpg', 'carousel-002-video.jpg'];
+  await assert.rejects(downloadCarouselWithFallback({
+    entries: [{ ext: 'jpg' }, { ext: 'mp4', duration: 6 }],
+    downloadMedia: async () => { throw new Error('Download failed'); },
+    downloadThumbnails: async () => {},
+    listFiles: async () => files,
+  }), { code: 'CAROUSEL_VIDEO_MISSING' });
 });
