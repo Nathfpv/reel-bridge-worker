@@ -22,4 +22,8 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: node --check src/process-job.js && node --check src/analyzer.js && node --check src/result-transport.js
       - run: npm audit --omit=dev --audit-level=high
+      - name: Install system FFmpeg for synthetic media integration test
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
       - run: npm test
