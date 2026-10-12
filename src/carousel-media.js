@@ -81,6 +81,33 @@ export function collectCarouselSlides(filenames, expectedEntries = null) {
   return slides;
 }
 
+
+/**
+ * yt-dlp may exit non-zero for image-only Instagram posts with
+ * "No video formats found", even after writing every requested thumbnail.
+ * Validate actual downloaded files first, then retry a thumbnail-only pass.
+ * Never treat a video thumbnail as a downloaded video stream.
+ */
+export async function downloadCarouselWithFallback({ entries, downloadMedia, downloadThumbnails, listFiles }) {
+  let primaryError = null;
+  try { await downloadMedia(); }
+  catch (cause) { primaryError = cause; }
+  try { return collectCarouselSlides(await listFiles(), entries); }
+  catch {
+    let fallbackError = null;
+    try { await downloadThumbnails(); }
+    catch (cause) { fallbackError = cause; }
+    try { return collectCarouselSlides(await listFiles(), entries); }
+    catch (finalError) {
+      finalError.stderrTail = [
+        String(primaryError?.stderr || primaryError?.message || ''),
+        String(fallbackError?.stderr || fallbackError?.message || ''),
+      ].filter(Boolean).join('\n').slice(-1200);
+      throw finalError;
+    }
+  }
+}
+
 function quotedConcatPath(value) {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
