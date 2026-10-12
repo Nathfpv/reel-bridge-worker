@@ -20,6 +20,11 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: node --check src/process-job.js && node --check src/analyzer.js && node --check src/result-transport.js
+      - run: node --check src/process-job.js && node --check src/analyzer.js && node --check src/carousel-media.js && node --check src/result-transport.js
       - run: npm audit --omit=dev --audit-level=high
+      - name: Install FFmpeg/FFprobe for real media integration tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - run: ffmpeg -version && ffprobe -version
       - run: npm test
