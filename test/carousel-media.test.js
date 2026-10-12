@@ -55,7 +55,8 @@ test('normalization uses exactly matching dimensions for landscape, portrait and
   assert.doesNotMatch(canvasFilter(128), /pad=128:ih/);
 });
 
-test('real FFmpeg round-trip handles portrait/square/video slides and keeps audio', { skip: !binariesPresent, timeout: 120000 }, async () => {
+test('real FFmpeg round-trip handles portrait/square/video slides and keeps audio', { timeout: 120000 }, async () => {
+  assert.ok(binariesPresent, 'FFmpeg and FFprobe must be installed; media integration may not be skipped');
   const root = await mkdtemp(join(tmpdir(), 'reel-carousel-e2e-'));
   const mediaDir = join(root, 'media');
   const outputDir = join(root, 'rendered');
