@@ -29,27 +29,16 @@ jobs:
           curl --fail --location --retry 3 https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp --output "$HOME/.local/bin/yt-dlp"
           chmod 700 "$HOME/.local/bin/yt-dlp"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Install FFprobe with bounded mirror fallback
-        timeout-minutes: 5
+      - name: Install FFprobe required by carousel video inspection
+        timeout-minutes: 4
         run: |
           set -euo pipefail
-          if command -v ffprobe >/dev/null 2>&1; then
-            ffprobe -version
-            exit 0
-          fi
-          # Ubuntu GitHub runners may select an unreliable Azure APT mirror.
-          for list in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
-            if [ -f "$list" ]; then
-              sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' "$list"
+          if ! command -v ffprobe >/dev/null 2>&1; then
+            if ! timeout 90s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=1 ffmpeg; then
+              timeout 45s sudo apt-get update -qq -o Acquire::Retries=1
+              timeout 90s sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Acquire::Retries=1 ffmpeg
             fi
-          done
-          opts=(-o Acquire::Retries=1 -o Acquire::http::Timeout=10 -o Acquire::https::Timeout=10)
-          # First try already cached APT package indexes; skip a slow update.
-          if ! timeout 75s sudo apt-get "${opts[@]}" install -y -qq --no-install-recommends ffmpeg; then
-            timeout 75s sudo apt-get "${opts[@]}" update -qq
-            timeout 75s sudo apt-get "${opts[@]}" install -y -qq --no-install-recommends ffmpeg
           fi
-          command -v ffprobe
           ffprobe -version
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
