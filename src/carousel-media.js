@@ -81,6 +81,39 @@ export function collectCarouselSlides(filenames, expectedEntries = null) {
   return slides;
 }
 
+/**
+ * A yt-dlp process may exit non-zero after writing valid Instagram photo
+ * thumbnails ("No video formats found"). Judge success by the complete files,
+ * not only the command's exit status. Retry a partial download once.
+ */
+export async function downloadCarouselValidated({ entries, thumbnailPass, videoPass, listFiles }) {
+  const failures = [];
+  async function invoke(label, task) {
+    if (!task) return;
+    try { await task(); }
+    catch (cause) {
+      failures.push(label + ': ' + String(cause?.stderr || cause?.message || cause).slice(-500));
+    }
+  }
+  async function validate() {
+    return collectCarouselSlides(await listFiles(), entries);
+  }
+  await invoke('thumbnails', thumbnailPass);
+  await invoke('videos', videoPass);
+  try {
+    return await validate();
+  } catch (firstError) {
+    await invoke('thumbnails-retry', thumbnailPass);
+    await invoke('videos-retry', videoPass);
+    try {
+      return await validate();
+    } catch (finalError) {
+      finalError.stderrTail = [finalError.message, ...failures].join('\n').slice(-1200);
+      throw finalError;
+    }
+  }
+}
+
 function quotedConcatPath(value) {
   return "'" + value.replace(/'/g, "'\\''") + "'";
 }
