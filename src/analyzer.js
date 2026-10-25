@@ -359,7 +359,9 @@ async function renderContactSheet(selected, outputPath) {
 
   for (const withLabels of [true, false]) {
     const filters = contactSheetFilters(selected, width, height, withLabels);
-    filters.push(`${selected.map((_, index) => `[v${index}]`).join('')}xstack=inputs=${selected.length}:layout=${layout}:fill=black[out]`);
+    // xstack requires at least two inputs; single-photo posts are valid.
+    if (selected.length === 1) filters[0] = filters[0].replace(/\[v0\]$/, '[out]');
+    else filters.push(`${selected.map((_, index) => `[v${index}]`).join('')}xstack=inputs=${selected.length}:layout=${layout}:fill=black[out]`);
     try {
       await run(config.ffmpegBin, ['-hide_banner', '-loglevel', 'error', ...inputs, '-filter_complex', filters.join(';'), '-map', '[out]', '-frames:v', '1', '-q:v', '5', '-y', outputPath]);
       return readFile(outputPath);

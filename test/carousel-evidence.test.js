@@ -58,3 +58,17 @@ test('missing slide attachment is an explicit failure, never a completed carouse
     frames: [], ocr: [], timeline: [],
   }, directory, 'post'), { code: 'CAROUSEL_EVIDENCE_INCOMPLETE' });
 });
+
+test('single-photo post produces a real contact sheet without multi-input stacking', { timeout: 30000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'single-photo-evidence-'));
+  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const filePath = join(directory, 'single.jpg');
+  await execFile('ffmpeg', ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=green:s=160x160:d=1','-frames:v','1','-update','1','-y',filePath]);
+  const result = await createEvidencePackage('synthetic-single', {
+    carouselSlides:[{slide_index:1,media_type:'image',filePath,start_seconds:0,end_seconds:3}],
+    frames:[],ocr:[],timeline:[],
+  },directory,'post');
+  assert.ok(result.contactSheet?.length>100);
+  assert.equal(result.manifest.carousel.slide_count,1);
+  assert.deepEqual(result.keyframes.map(x=>x.filename),['slide_01.jpg']);
+});
